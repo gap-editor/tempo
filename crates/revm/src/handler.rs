@@ -502,14 +502,18 @@ where
         // Check if this is an AA transaction by checking for tempo_tx_env
         let evm_ctx = evm.ctx();
         if let Some(tempo_tx_env) = evm_ctx.tx().tempo_tx_env.as_ref() {
-            // Ensure gas limit covers 2D nonce cost
-            let gas_limit = evm_ctx.tx().gas_limit();
-            if gas_limit < adjusted_gas.initial_gas {
-                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                    gas_limit,
-                    intrinsic_gas: adjusted_gas.initial_gas,
+            // [T0] Ensure gas limit covers 2D nonce cost before AA execution
+            // This prevents underflow when computing remaining gas
+            let spec = evm_ctx.cfg().spec();
+            if spec.is_t0() {
+                let gas_limit = evm_ctx.tx().gas_limit();
+                if gas_limit < adjusted_gas.initial_gas {
+                    return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                        gas_limit,
+                        intrinsic_gas: adjusted_gas.initial_gas,
+                    }
+                    .into());
                 }
-                .into());
             }
 
             // AA transaction - use batch execution with calls field
@@ -563,14 +567,17 @@ where
             // because pre_execution::apply_eip7702_auth_list returns early for non-0x04 tx types
 
             let chain_id = ctx.cfg().chain_id();
+            // Get hardfork spec for T0 gating before mutable borrow
+            let is_t0 = ctx.cfg().spec().is_t0();
+
             let (tx, journal) = evm.ctx().tx_journal_mut();
 
             let tempo_tx_env = tx.tempo_tx_env.as_ref().unwrap();
             let mut refunded_accounts = 0;
 
             for authorization in &tempo_tx_env.tempo_authorization_list {
-                // Access keys cannot perform EIP-7702 delegation - skip keychain signatures
-                if authorization.signature().is_keychain() {
+                // [T0] Access keys cannot perform EIP-7702 delegation - skip keychain signatures
+                if is_t0 && authorization.signature().is_keychain() {
                     continue;
                 }
 
